@@ -3,15 +3,14 @@
 Renames OBS replays to ShadowPlay format based on folder structure.
 
 Usage:
-`cd` into the clips root directory (e.g. Videos/) and run `python rename_obs_videos.py`.
+`cd` into the clips root directory and run `python rename_obs_videos.py`.
 Clips must be organized at least one level deep: <RootDirectory>/<GameName>/Replay_*.mkv.
 
 By default, an interactive prompt lists discovered game folders and lets you select
 which to include. Pass --whitelist to skip the prompt for non-interactive use.
 Files directly in the root are ignored unless --include-root is passed.
 
-Writes a JSON log of all planned renames before touching any files.
-On success, the log is deleted, otherwise it is preserved for inspection.
+Writes a .log file recording each rename as it happens.
 
 Run with --help for full argument details.
 """
@@ -19,54 +18,23 @@ Run with --help for full argument details.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
-import os
 import sys
-from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from pathlib import Path
-from tempfile import mkstemp
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-JSON_PREFIX = "rename_obs_videos_"
+LOG_PREFIX = "rename_obs_videos_"
 ROOT_DIR = Path.cwd()
 
 
-@dataclass(frozen=True)
-class VideoEntry:
-    old_path: Path
-    new_path: Path
-
-
-# https://stackoverflow.com/a/51286749/
-class VideoEntryJSONEncoder(json.JSONEncoder):
-    def default(self, o):
-        if is_dataclass(o):
-            return asdict(o)
-        if isinstance(o, Path):
-            return str(o)
-        return super().default(o)
-
-
-def build_json_filename() -> str:
-    return JSON_PREFIX + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-
-
-def create_json_file() -> Path:
-    filename = build_json_filename()
-    title_exists = (ROOT_DIR / f"{filename}.json").exists()
-    if title_exists:
-        fd, json_path = mkstemp(".json", filename + "_", ROOT_DIR)
-        os.close(fd)
-        json_path = Path(json_path)
-    else:
-        json_path = ROOT_DIR / f"{filename}.json"
-        json_path.touch()
-    return json_path
+def setup_file_logging() -> Path:
+    log_path = ROOT_DIR / f"{LOG_PREFIX}{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log"
+    file_handler = logging.FileHandler(log_path)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logging.getLogger().addHandler(file_handler)
+    return log_path
 
 
 def find_game_folders() -> list[Path]:
@@ -119,8 +87,7 @@ def get_new_path(old_path: Path) -> Path:
     new_prefix = old_path.parent.name
     old_without_prefix = old_path.name.removeprefix("Replay_")
     # extra space after the prefix follows shadowplay format
-    new_path = old_path.parent / f"{new_prefix} {old_without_prefix}"
-    return new_path
+    return old_path.parent / f"{new_prefix} {old_without_prefix}"
 
 
 def rename_video(old_path: Path, new_path: Path) -> None:
@@ -171,38 +138,22 @@ def main() -> None:
             logging.info("No matching videos found in selected folders.")
             return
 
-        json_path = create_json_file()
-        json_array: list[VideoEntry] = []
+        log_path = setup_file_logging()
+        logging.info(f"Log: {log_path}")
+
         videos_total = len(matching_videos)
-
-        for video_path in matching_videos:
-            new_path = get_new_path(video_path)
-            json_array.append(VideoEntry(video_path, new_path))
-
-        try:
-            with json_path.open("w") as file:
-                json.dump(json_array, file, cls=VideoEntryJSONEncoder)
-        except Exception as e:
-            logging.error(f"Something went wrong when initializing JSON file: {e}")
-            return
-
-        count = 0
-        for entry in json_array:
-            count += 1
+        for count, video_path in enumerate(matching_videos, start=1):
             logging.info(f"Processing video {count} of {videos_total}")
+            new_path = get_new_path(video_path)
             try:
-                rename_video(entry.old_path, entry.new_path)
+                rename_video(video_path, new_path)
             except Exception as e:
                 logging.error(
                     f"Something went wrong when attempting to rename: {e}\n"
-                    f"Old path: {str(entry.old_path)}\n"
-                    f"New path: {str(entry.new_path)}"
+                    f"Old path: {video_path}\n"
+                    f"New path: {new_path}"
                 )
-                logging.info(f"JSON log preserved at: {json_path}")
                 return
-
-        # JSON file is temporary on happy path
-        json_path.unlink()
 
     except KeyboardInterrupt:
         print()
