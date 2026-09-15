@@ -23,16 +23,23 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 
 LOG_PREFIX = "rename_obs_videos_"
 ROOT_DIR = Path.cwd()
 
 
 def setup_file_logging() -> Path:
-    log_path = ROOT_DIR / f"{LOG_PREFIX}{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log"
+    log_path = (
+        ROOT_DIR
+        / f"{LOG_PREFIX}{datetime.now().astimezone().strftime('%Y-%m-%d_%H-%M-%S')}.log"
+    )
     file_handler = logging.FileHandler(log_path)
-    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    )
     logging.getLogger().addHandler(file_handler)
     return log_path
 
