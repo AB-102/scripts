@@ -29,23 +29,25 @@ from pathlib import Path
 # Update vars as needed below. Ask a maintainer for the REPLACE_ME values.
 _BACKEND_ENV = """\
 OPENAI_API_KEY=REPLACE_ME
-MONGODB_URI=REPLACE_ME
+MONGODB_URI=mongodb://127.0.0.1:27017/quantaid-dev
 MONGODB_URI_TEST=mongodb://127.0.0.1:27017/quantaid-test
 ADMIN_EMAILS=REPLACE_ME
 JWT_SECRET_KEY=local-dev-jwt-secret-key
 ENVIRONMENT=development
 CORS_ORIGINS=http://localhost:5173
+IS_RICE_DEPLOYMENT=false
+GOOGLE_CLIENT_ID=REPLACE_ME
 #FIRST_TIME_USER_EMAIL=your-dev-forced-onboarding@email.com
 """
 
 _FRONTEND_ENV = """\
 VITE_BACKEND_URL=http://localhost:8000
-VITE_GOOGLE_CLIENT_ID=REPLACE_ME
-VITE_PORT=5173
-#VITE_FIRST_TIME_USER_EMAIL=your_email@email.com
 """
 
 PLACEHOLDER = "REPLACE_ME"
+
+# Local MongoDB for the backend (quantaid-dev) and its tests (quantaid-test)
+MONGO_CONTAINER = "quantaid-mongo"
 
 ROOT = Path(__file__).parent
 
@@ -165,11 +167,18 @@ _INSTALL_HINTS: dict[str, str] = {
         else "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash  (restart terminal, then: nvm install --lts)"
     ),
     "npm": "npm is included with Node.js — see the node hint",
+    "docker": (
+        "winget install Docker.DockerDesktop"
+        if WIN
+        else "brew install --cask docker"
+        if sys.platform == "darwin"
+        else "sudo apt-get install docker.io"
+    ),
 }
 
 
 def _check_prerequisites() -> bool:
-    missing = [t for t in ("git", "uv", "node", "npm") if not shutil.which(t)]
+    missing = [t for t in ("git", "uv", "node", "npm", "docker") if not shutil.which(t)]
     if missing:
         _error(f"Missing required tools: {', '.join(missing)}")
         for tool in missing:
@@ -288,6 +297,37 @@ def _install_deps(services: list[dict]) -> None:
             )
 
 
+def _start_mongo() -> None:
+    """Start the local MongoDB that dev and tests share, creating its container the first time."""
+    started = subprocess.run(
+        ["docker", "start", MONGO_CONTAINER], check=False, capture_output=True
+    )
+    if started.returncode == 0:
+        _info(f"MongoDB running in Docker container '{MONGO_CONTAINER}'")
+        return
+    _info(f"Creating MongoDB Docker container '{MONGO_CONTAINER}'...")
+    try:
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                MONGO_CONTAINER,
+                "-p",
+                "127.0.0.1:27017:27017",
+                "mongo:7",
+            ],
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        _error(
+            "Could not start MongoDB in Docker — is Docker running, and is port 27017 free?"
+            " (Stop any older container on it, e.g. docker stop quantaid-test-mongo)"
+        )
+        sys.exit(1)
+
+
 def _stream(stream, prefix: str) -> None:
     try:
         for line in stream:
@@ -400,6 +440,7 @@ def main() -> None:
             sys.exit(0)
 
     _warn_placeholders(SERVICES)
+    _start_mongo()
     _launch(SERVICES)
 
 
