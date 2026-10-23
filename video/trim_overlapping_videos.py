@@ -3,14 +3,16 @@
 Trims overlapping replays per directory based on comparisons using ffmpeg and format pattern matching.
 
 Usage:
-`cd` into the clips root directory and run `python rename_obs_videos.py`.
-Clips must be organized at least one level deep: <RootDirectory>/<GameName>/Replay_*.mkv.
+`cd` into the clips root directory (or a single game folder) and run `python trim_overlapping_videos.py`.
+Clips are grouped by the folder they directly sit in and must be named
+<FolderName> YYYY-MM-DD_HH-MM-SS*.mkv or Replay_YYYY-MM-DD_HH-MM-SS*.mkv,
+where the timestamp marks when the clip ended.
 
-By default, an interactive prompt lists discovered game folders and lets you select
-which to include. Pass --whitelist to skip the prompt for non-interactive use.
-Files directly in the root are ignored unless --include-root is passed.
+Every discovered folder gets a [y/N] prompt before any trimming starts.
+Trimmed clips are written beside the original with a _trimmed suffix, and
+originals are only deleted when --delete-originals is passed.
 
-Writes a .log file recording each rename as it happens.
+Writes a .log file recording each trim and deletion as it happens.
 
 Run with --help for full argument details.
 """
@@ -61,7 +63,7 @@ def setup_file_logging() -> Path:
 
 def is_eligible_video(video: Path) -> bool:
     file = video.stem
-    parent_folder_prefix = video.parent.stem + " "
+    parent_folder_prefix = video.parent.name + " "
     valid_prefixes = (parent_folder_prefix, "Replay_")
 
     file_prefix = next((p for p in valid_prefixes if file.startswith(p)), None)
@@ -80,7 +82,7 @@ def is_eligible_video(video: Path) -> bool:
 
 def parse_end_time(video: Path) -> datetime:
     file = video.stem
-    parent_folder_prefix = video.parent.stem + " "
+    parent_folder_prefix = video.parent.name + " "
     valid_prefixes = (parent_folder_prefix, "Replay_")
     file_prefix = next(p for p in valid_prefixes if file.startswith(p))
     timestamp = file.removeprefix(file_prefix)[:TIMESTAMP_LENGTH]
@@ -92,7 +94,6 @@ def find_game_folders() -> list[Path]:
         {
             video.parent
             for video in ROOT_DIR.glob("**/*.mkv")
-            # if video.parent != ROOT_DIR and is_eligible_video(video)
             if is_eligible_video(video)
         }
     )
@@ -104,17 +105,25 @@ def confirm_folder(folder: Path) -> bool:
 
 
 def find_folder_videos(folder: Path) -> list[Path]:
-    return sorted(filter(is_eligible_video, folder.rglob("*.mkv")))
+    # non-recursive so a folder never pulls in clips from its subfolders
+    return sorted(filter(is_eligible_video, folder.glob("*.mkv")))
 
 
-def find_untrimmed_originals(videos: list[Path]) -> list[Path]:
-    trimmed_stems = {video.stem for video in videos if video.stem.endswith(TRIM_SUFFIX)}
-    return [
-        video
-        for video in videos
-        if not video.stem.endswith(TRIM_SUFFIX)
-        and f"{video.stem}{TRIM_SUFFIX}" not in trimmed_stems
-    ]
+def is_trimmed(video: Path) -> bool:
+    return video.stem.endswith(TRIM_SUFFIX)
+
+
+def build_timeline(videos: list[Path]) -> list[Path]:
+    # a trimmed clip stands in for its original so it still anchors the next clip
+    trimmed_stems = {video.stem for video in videos if is_trimmed(video)}
+    return sorted(
+        (
+            video
+            for video in videos
+            if f"{video.stem}{TRIM_SUFFIX}" not in trimmed_stems
+        ),
+        key=parse_end_time,
+    )
 
 
 def get_duration(video: Path) -> float:
@@ -160,6 +169,10 @@ def trim_video(clip: VideoClip, trim_seconds: float) -> Path:
     subprocess.run(
         [
             "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-stats",
             "-y",
             "-ss",
             f"{trim_seconds:.3f}",
@@ -171,8 +184,6 @@ def trim_video(clip: VideoClip, trim_seconds: float) -> Path:
             "copy",
             output_path,
         ],
-        capture_output=True,
-        text=True,
         check=True,
     )
     return output_path
@@ -211,23 +222,24 @@ def main() -> None:
                 f"Processing folder {folder_count} of {folders_total}: '{folder.name}'"
             )
 
-            originals = find_untrimmed_originals(find_folder_videos(folder))
-            if len(originals) < 2:
-                continue
+            timeline = build_timeline(find_folder_videos(folder))
+            for former, latter in pairwise(timeline):
+                if is_trimmed(latter):
+                    continue
 
-            try:
-                clips = sorted(
-                    (build_video_clip(video) for video in originals),
-                    key=lambda clip: clip.end_time,
-                )
-            except Exception as e:
-                logging.error(
-                    f"Something went wrong reading clip info in '{folder.name}': {e}"
-                )
-                return
+                # only probe clips that could be trimmed, former only needs its end time
+                try:
+                    clip = build_video_clip(latter)
+                except Exception as e:
+                    logging.error(
+                        f"Something went wrong reading clip info for {latter.name}: {e}\n"
+                        f"Path: {latter}"
+                    )
+                    return
 
-            for former, latter in pairwise(clips):
-                overlap_seconds = (former.end_time - latter.start_time).total_seconds()
+                overlap_seconds = (
+                    parse_end_time(former) - clip.start_time
+                ).total_seconds()
                 if overlap_seconds <= 0:
                     continue
 
@@ -235,24 +247,24 @@ def main() -> None:
                 if trim_seconds <= 0:
                     continue
 
-                if not has_enough_space(latter.path):
+                if not has_enough_space(clip.path):
                     logging.error(
-                        f"Not enough free disk space to trim '{latter.path.name}'."
+                        f"Not enough free disk space to trim '{clip.path.name}'."
                     )
                     return
 
                 try:
-                    trim_video(latter, trim_seconds)
+                    trim_video(clip, trim_seconds)
                 except Exception as e:
                     logging.error(
-                        f"Something went wrong when attempting to trim file {latter.path.name}: {e}\n"
-                        f"Path: {latter.path}"
+                        f"Something went wrong when attempting to trim file {clip.path.name}: {e}\n"
+                        f"Path: {clip.path}"
                     )
                     return
 
                 if args.delete_originals:
-                    logging.info(f"Deleting original '{latter.path.name}'")
-                    latter.path.unlink()
+                    logging.info(f"Deleting original '{clip.path.name}'")
+                    clip.path.unlink()
 
     except KeyboardInterrupt:
         print()
