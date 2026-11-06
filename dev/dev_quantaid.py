@@ -38,6 +38,7 @@ CORS_ORIGINS=http://localhost:5173
 IS_RICE_DEPLOYMENT=false
 GOOGLE_CLIENT_ID=REPLACE_ME
 #FIRST_TIME_USER_EMAIL=your-dev-forced-onboarding@email.com
+#RESEND_API_KEY=REPLACE_ME  # Set to allow transactional email (e.g. welcome); unset turns email off
 """
 
 _FRONTEND_ENV = """\
