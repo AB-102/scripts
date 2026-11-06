@@ -1,7 +1,14 @@
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 
+$timingLine = '^\s*(\d+:)?\d+:\d{2}\.\d{3}\s+-->'
+$shortStamp = [regex]'(?<![\d:])(\d+):(\d{2}\.\d{3})'
+$toFullStamp = [System.Text.RegularExpressions.MatchEvaluator]{
+    param($m)
+    $minutes = [int]$m.Groups[1].Value
+    '{0:D2}:{1:D2}:{2}' -f [int][math]::Floor($minutes / 60), ($minutes % 60), $m.Groups[2].Value
+}
+
 foreach ($file in Get-ChildItem -Filter *.vtt -File) {
-    # Skip files that already look converted
     if ($file.BaseName -like '*_converted') {
         Write-Host "Skipping already converted file $($file.Name)"
         continue
@@ -12,21 +19,28 @@ foreach ($file in Get-ChildItem -Filter *.vtt -File) {
     $out = Join-Path $file.DirectoryName "$($file.BaseName)_converted.vtt"
     $lines = @(Get-Content -LiteralPath $file.FullName -Encoding UTF8)
 
-    $converted = @(foreach ($line in $lines) {
-        # Check if line looks like a timestamp MM:SS.mmm --> MM:SS.mmm
-        if ($line -match '^\d+:\d{2}\.\d{3}') {
-            # Prefix 00: to both the start and end timestamps if they lack hours
-            $line = $line -replace '(?<![\d:])(\d+:\d{2}\.\d{3})', '00:$1'
-        }
-        $line
-    })
+    $converted = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $lines) {
+        if ($line.Trim() -eq '') { $line = '' }
 
-    # Add the WEBVTT header only if the source doesn't already have one
-    if ($lines.Count -eq 0 -or $lines[0] -notlike 'WEBVTT*') {
-        $converted = @('WEBVTT', '') + $converted
+        if ($line -match $timingLine) {
+            $line = $shortStamp.Replace($line, $toFullStamp)
+
+            # WebVTT needs a blank line before every cue
+            $n = $converted.Count
+            $prevBlank = $n -eq 0 -or $converted[$n - 1] -eq ''
+            $prevIsId = -not $prevBlank -and $converted[$n - 1] -notlike 'WEBVTT*' -and
+                ($n -eq 1 -or $converted[$n - 2] -eq '')
+            if (-not $prevBlank -and -not $prevIsId) { $converted.Add('') }
+        }
+        $converted.Add($line)
     }
 
-    [System.IO.File]::WriteAllLines($out, [string[]]$converted, $utf8NoBom)
+    if ($lines.Count -eq 0 -or $lines[0] -notlike 'WEBVTT*') {
+        $converted.InsertRange(0, [string[]]@('WEBVTT', ''))
+    }
+
+    [System.IO.File]::WriteAllLines($out, $converted.ToArray(), $utf8NoBom)
 }
 
 Write-Host 'Done! New files are suffixed with _converted.vtt'
